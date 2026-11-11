@@ -4,7 +4,7 @@ Splits at headings, carries the heading path, packs paragraphs into 300-600 toke
 records the page each chunk starts on. Prints a per-source token report.
 Usage: .venv/bin/python scripts/chunk_corpus.py
 """
-import json, os, re, sys
+import csv, json, os, re, sys
 from collections import defaultdict
 
 SRC, OUT = "data/clean", "data/processed/domain_corpus/chunks.jsonl"
@@ -105,8 +105,15 @@ def dedup(recs, threshold=0.8):
     return sorted(kept, key=lambda r: r["chunk_id"]), dropped
 
 
+def source_date(original, dates):
+    # inventory "file" may be the full file name or a prefix of the md name (law files carry a date suffix)
+    return next((d for f, d in dates.items() if original == f or original.startswith(f)), None)
+
+
 def main():
     ocr = ocr_files()
+    inv = "sources_inventory.csv"
+    dates = {r["file"]: r["source_date"] for r in csv.DictReader(open(inv)) if r["source_date"]} if os.path.exists(inv) else {}
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     report = defaultdict(lambda: [0, 0])
     recs = []
@@ -118,7 +125,7 @@ def main():
         doc_type = "statute" if any(k in original.lower() for k in STATUTES) else "book_or_guide"
         for i, (path, page, txt) in enumerate(chunk_doc(open(os.path.join(SRC, name)).read())):
             recs.append({"chunk_id": f"{slug}_{i:04d}", "text": txt, "source": original, "doc_type": doc_type,
-                         "section_path": path, "page": page, "source_date": None,  # fill from sources_inventory.csv
+                         "section_path": path, "page": page, "source_date": source_date(original, dates),
                          "jurisdiction": "US-federal", "ocr": original in ocr})
     recs, dropped = dedup(recs)
     with open(OUT, "w") as out:

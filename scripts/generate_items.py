@@ -5,6 +5,7 @@ Usage: .venv/bin/python scripts/generate_items.py [--per-category-multiplier 2] 
 Needs OPENAI_API_KEY in .env.
 """
 import argparse, json, os, random, re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import OpenAI
 
 CHUNKS = "data/processed/domain_corpus/chunks.jsonl"
@@ -66,6 +67,7 @@ def main():
     ap.add_argument("--per-category-multiplier", type=int, default=2)
     ap.add_argument("--model", default="gpt-5.5")
     ap.add_argument("--limit", type=int, default=0, help="stop after N new items (0 = all)")
+    ap.add_argument("--workers", type=int, default=8, help="parallel API calls")
     args = ap.parse_args()
     for line in open(".env"):
         if "=" in line and not line.startswith("#"):
@@ -76,30 +78,37 @@ def main():
     jobs = pick_chunks(chunks, random.Random(1234), args.per_category_multiplier)
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     done = {(r["category"], r["chunk_id"]) for r in map(json.loads, open(OUT))} if os.path.exists(OUT) else set()
+    pending = [(cat, c) for cat, c in jobs if (cat, c["chunk_id"]) not in done]
+    if args.limit:
+        pending = pending[: args.limit]
+
+    def generate(job):
+        cat, c = job
+        fmt = "mc" if random.Random(c["chunk_id"] + cat).random() < 0.4 else "short"  # ~40% MC (plan)
+        user = (f"Category: {cat} - {CATEGORIES[cat][1]}\nFormat: {fmt}\n"
+                f"Source: {c['source']} | section: {' > '.join(c['section_path'])} | page {c['page']}\n\n"
+                f"PASSAGE:\n{c['text']}")
+        resp = client.chat.completions.create(
+            model=args.model,
+            messages=[{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}],
+            response_format={"type": "json_schema", "json_schema": {"name": "item", "strict": True, "schema": SCHEMA}},
+        )
+        item = json.loads(resp.choices[0].message.content)
+        item.update(category=cat, chunk_id=c["chunk_id"], source=c["source"], page=c["page"], generator=args.model)
+        return item
+
     made = 0
-    with open(OUT, "a") as out:
-        for i, (cat, c) in enumerate(jobs):
-            if (cat, c["chunk_id"]) in done:
-                continue
-            fmt = "mc" if random.Random(c["chunk_id"] + cat).random() < 0.4 else "short"  # ~40% MC (plan)
-            user = (f"Category: {cat} - {CATEGORIES[cat][1]}\nFormat: {fmt}\n"
-                    f"Source: {c['source']} | section: {' > '.join(c['section_path'])} | page {c['page']}\n\n"
-                    f"PASSAGE:\n{c['text']}")
+    with open(OUT, "a") as out, ThreadPoolExecutor(args.workers) as pool:
+        futures = {pool.submit(generate, j): j for j in pending}
+        for n, fut in enumerate(as_completed(futures), 1):
+            cat, c = futures[fut]
             try:
-                resp = client.chat.completions.create(
-                    model=args.model,
-                    messages=[{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}],
-                    response_format={"type": "json_schema", "json_schema": {"name": "item", "strict": True, "schema": SCHEMA}},
-                )
-                item = json.loads(resp.choices[0].message.content)
+                item = fut.result()
             except Exception as e:  # one failure shouldn't stop a long run; rerun to retry
-                print(f"[{i}] {cat} {c['chunk_id']}: ERROR {e}", flush=True); continue
-            item.update(category=cat, chunk_id=c["chunk_id"], source=c["source"], page=c["page"], generator=args.model)
-            out.write(json.dumps(item, ensure_ascii=False) + "\n"); out.flush()
+                print(f"[{n}/{len(pending)}] {cat} {c['chunk_id']}: ERROR {e}", flush=True); continue
+            out.write(json.dumps(item, ensure_ascii=False) + "\n"); out.flush()  # only main thread writes
             made += 1
-            print(f"[{i + 1}/{len(jobs)}] {cat} {c['chunk_id']}", flush=True)
-            if args.limit and made >= args.limit:
-                break
+            print(f"[{n}/{len(pending)}] {cat} {c['chunk_id']}", flush=True)
     print(f"wrote {made} new items -> {OUT}")
 
 
