@@ -218,3 +218,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Training data and outputs (licensed / private)
+credit repair llm data/
+data/
+adapters/
+checkpoints/
+evaluation_results/*
+!evaluation_results/REPORT.md
+_duplicates_removed/
