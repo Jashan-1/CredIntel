@@ -6,7 +6,7 @@
          writes validation.jsonl + test.jsonl and prints the test SHA-256 for the README.
 Usage: .venv/bin/python scripts/verify_items.py check|lock
 """
-import csv, hashlib, json, random, re, sys, unicodedata
+import csv, hashlib, json, os, random, re, sys, unicodedata
 from collections import defaultdict
 
 CHUNKS = "data/processed/domain_corpus/chunks.jsonl"
@@ -43,6 +43,8 @@ def check():
     chunks = {c["chunk_id"]: c for c in map(json.loads, open(CHUNKS))}
     items = list(map(json.loads, open(CAND)))
     fails = defaultdict(int)
+    # keep earlier review marks/notes when re-run after adding candidates
+    prev = {r["row"]: r for r in csv.DictReader(open(REVIEW))} if os.path.exists(REVIEW) else {}
     with open(REVIEW, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["keep", "row", "category", "format", "question", "options", "reference_answer", "support_quote", "source", "page", "auto_problems"])
@@ -52,17 +54,33 @@ def check():
                 fails[x] += 1
             if p:  # auto-fail = discard (plan); not shown for review
                 continue
-            w.writerow(["", i, it["category"], it["format"], it["question"], " | ".join(it["options"]),
-                        it["reference_answer"], it["support_quote"], it["source"], it["page"], ""])
+            old = prev.get(str(i), {})
+            w.writerow([old.get("keep", ""), i, it["category"], it["format"], it["question"], " | ".join(it["options"]),
+                        it["reference_answer"], it["support_quote"], it["source"], it["page"], old.get("auto_problems", "")])
     passed = len(items) - sum(1 for it in items if problems(it, chunks.get(it["chunk_id"])))
     print(f"{len(items)} candidates, {passed} passed auto-checks -> {REVIEW}")
     print("auto-fail reasons:", dict(fails))
     print("Next: open review.csv, put y in 'keep' for items whose quote supports the answer and that have one defensible answer.")
 
 
+def shuffle_mc(item, rng):
+    """Generator put the answer at A/B 74% of the time; shuffle options and relabel the answer letter."""
+    if item["format"] != "mc":
+        return item
+    strip = lambda s: re.sub(r"^\(?[A-D][.)]?\s*[—–-]?\s*", "", s.strip())
+    m = re.match(r"^\(?([A-D])\b[.)]?\s*[—–-]?\s*(.*)", item["reference_answer"].strip(), re.S)
+    gold = "ABCD".index(m.group(1))
+    opts = [strip(o) for o in item["options"]]
+    order = list(range(4)); rng.shuffle(order)
+    new_gold = "ABCD"[order.index(gold)]
+    return dict(item, options=[f"{'ABCD'[i]}. {opts[j]}" for i, j in enumerate(order)],
+                reference_answer=f"{new_gold}. {m.group(2)}")
+
+
 def lock():
     items = list(map(json.loads, open(CAND)))
-    kept = [items[int(r["row"])] for r in csv.DictReader(open(REVIEW)) if r["keep"].strip().lower() == "y"]
+    srng = random.Random(7)
+    kept = [shuffle_mc(items[int(r["row"])], srng) for r in csv.DictReader(open(REVIEW)) if r["keep"].strip().lower() == "y"]
     by_cat = defaultdict(list)
     for it in kept:
         by_cat[it["category"]].append(it)
@@ -88,6 +106,11 @@ def _selftest():
     assert problems(it, c) == [], problems(it, c)
     assert "quote_not_in_chunk" in problems(dict(it, support_quote="within 45 days of receipt"), c)
     assert "banned_phrase" in problems(dict(it, reference_answer="This will be removed."), c)
+    mc = {"format": "mc", "options": ["A. right", "B. wrong1", "C. wrong2", "D. wrong3"], "reference_answer": "A — because right."}
+    for seed in range(8):
+        s = shuffle_mc(mc, random.Random(seed))
+        g = s["reference_answer"][0]
+        assert s["options"]["ABCD".index(g)] == f"{g}. right" and s["reference_answer"] == f"{g}. because right.", s
 
 
 if __name__ == "__main__":

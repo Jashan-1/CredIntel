@@ -24,7 +24,9 @@ CATEGORIES = {
 # Statutes/regulations ground the legal categories; Metro-2 and guides ground report/data categories.
 LEGAL = {"legal_knowledge", "legal_application", "false_premise", "abstention"}
 # Not sent to the external service: no rights decision yet / may contain real personal data.
-EXCLUDE = re.compile(r"oceanofpdf|loandoc|identityiq", re.I)
+# Also not benchmark sources (review 2026-11-12): coaching books (tactics, not law) and the 3 duplicate
+# variants of the Account Types file.
+EXCLUDE = re.compile(r"oceanofpdf|loandoc|identityiq|^chapter|account types error detection( copy|\.docx)", re.I)
 
 SCHEMA = {
     "type": "object", "additionalProperties": False,
@@ -48,14 +50,27 @@ Rules:
 - Use only fictional people, companies and account numbers.
 - key_points: 2-4 short facts a correct answer must contain.
 - Never state or imply guaranteed deletion, score increases or outcomes.
-- If the passage cannot support a good question of the requested category, still return your best attempt; it will be filtered later."""
+- If the passage cannot support a good question of the requested category, still return your best attempt; it will be filtered later.
+- Every reference answer must be TRUE as US law, not just consistent with the passage. Never treat "the passage does not
+  mention X" as "X does not exist in law": a passage is an excerpt, and the rest of the statute may set that deadline or right.
+- false_premise: the premise must be a requirement/right that is actually false under the law, and the passage must
+  affirmatively contradict it (quote the contradicting text). Vary the false premise: wrong actor, wrong scope, wrong
+  remedy, invented right, wrong trigger - not only invented 10- or 30-day deadlines.
+- abstention: what is missing must be a FACT about the consumer's situation (dates, documents, who reported what), never
+  a gap in the law.
+- Do not present dispute tactics, bureau practices or industry conventions as legal requirements.
+- Cite sections exactly as the passage numbers them (e.g. 623(a)(8)(F)(ii), not 623(F)(ii)). Quotes must not include page
+  headers, page numbers or page-break text, and must contain the words the answer relies on.
+- MC: answer with "<letter>. <explanation>"."""
 
 
-def pick_chunks(chunks, rng, mult):
+def pick_chunks(chunks, rng, mult, only=None):
     legal = [c for c in chunks if c["doc_type"] == "statute"]
     data = [c for c in chunks if c["doc_type"] != "statute"]
     jobs = []
     for cat, (n, _) in CATEGORIES.items():
+        if only and cat not in only:
+            continue
         pool = legal if cat in LEGAL else data
         for c in rng.sample(pool, min(len(pool), n * mult)):
             jobs.append((cat, c))
@@ -68,14 +83,16 @@ def main():
     ap.add_argument("--model", default="gpt-5.5")
     ap.add_argument("--limit", type=int, default=0, help="stop after N new items (0 = all)")
     ap.add_argument("--workers", type=int, default=8, help="parallel API calls")
+    ap.add_argument("--categories", nargs="*", help="top up only these categories")
     args = ap.parse_args()
     for line in open(".env"):
         if "=" in line and not line.startswith("#"):
             k, v = line.strip().split("=", 1); os.environ.setdefault(k, v.strip().strip('"'))
     client = OpenAI()
 
-    chunks = [c for c in map(json.loads, open(CHUNKS)) if not EXCLUDE.search(c["source"]) and len(c["text"].split()) > 60]
-    jobs = pick_chunks(chunks, random.Random(1234), args.per_category_multiplier)
+    chunks = [c for c in map(json.loads, open(CHUNKS)) if not EXCLUDE.search(c["source"]) and len(c["text"].split()) > 60
+              and "1022.38" not in " ".join(c["section_path"])]  # vacated medical-debt rule (see chunk_corpus.VACATED)
+    jobs = pick_chunks(chunks, random.Random(1234), args.per_category_multiplier, args.categories)
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     done = {(r["category"], r["chunk_id"]) for r in map(json.loads, open(OUT))} if os.path.exists(OUT) else set()
     pending = [(cat, c) for cat, c in jobs if (cat, c["chunk_id"]) not in done]

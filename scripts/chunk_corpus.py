@@ -14,6 +14,10 @@ HEAD = re.compile(r"^(#{1,6})\s+\**(.+?)\**\s*$")
 STATUTES = {"fcra-revised", "fair-debt-collection-practices-act", "croa 15 usc", "regulation v 12 cfr", "regulation f 12 cfr"}  # the official statute texts only
 
 
+# Text still in the eCFR snapshot but not law: CFPB 2025 medical-debt rule, vacated by E.D. Tex. on 2025-07-11.
+VACATED = re.compile(r"§ 1022\.38\b")
+
+
 def tokens(s):  # shortcut: words*1.3 approximates Qwen tokens; swap for the real tokenizer if chunk sizes matter
     return int(len(s.split()) * 1.3)
 
@@ -124,6 +128,8 @@ def main():
         slug = re.sub(r"[^a-z0-9]+", "_", original.lower()).strip("_")[:50]
         doc_type = "statute" if any(k in original.lower() for k in STATUTES) else "book_or_guide"
         for i, (path, page, txt) in enumerate(chunk_doc(open(os.path.join(SRC, name)).read())):
+            if VACATED.search(" ".join(path)):
+                continue
             recs.append({"chunk_id": f"{slug}_{i:04d}", "text": txt, "source": original, "doc_type": doc_type,
                          "section_path": path, "page": page, "source_date": source_date(original, dates),
                          "jurisdiction": "US-federal", "ocr": original in ocr})

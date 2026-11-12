@@ -227,3 +227,4 @@ checkpoints/
 evaluation_results/*
 !evaluation_results/REPORT.md
 _duplicates_removed/
+.DS_Store
